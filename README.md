@@ -149,15 +149,27 @@ curl 'http://localhost:3000/logs?userId=user-1&from=2026-11-01T00:00:00.000Z'
 
 ## Teknoloji Seçimleri
 
+Zorunlu yığın (case gereksinimi): **NestJS**, **TypeScript**, **PostgreSQL**, **TypeORM**. Aşağıdakiler, ihtiyaç duyulduğu için eklenen ek teknolojiler ve gerekçeleri:
+
 - **NestJS ve TypeScript:** API ve worker için ortak, modüler kod tabanı.
 - **PostgreSQL ve PostGIS:** Geometrilerin doğrulanması ve mekânsal sorgular.
-- **TypeORM:** Native PostGIS geometry desteği ve migration tabanlı şema yönetimi.
-- **Redis Streams:** Partition'lı kuyruklar, consumer group ve ack desteği.
-- **Redis:** Filtre, alan cache'i ve alan sürümü bildirimleri.
-- **Flatbush, Turf ve H3:** Bellek içi geofence aday arama ve kesin geometri değerlendirmesi.
-- **Jest, Supertest, testcontainers, fast-check ve k6:** Unit, entegrasyon, property-based, e2e ve yük testleri.
+- **TypeORM:** Native PostGIS geometry desteği ve migration tabanlı şema yönetimi. (Prisma'da PostGIS `geometry` tipi `Unsupported` kalır, her işlem ham SQL gerektirir.)
+- **Redis Streams:** Partition'lı kuyruklar, consumer group ve ack desteği — ayrı bir mesajlaşma altyapısı (Kafka, BullMQ) gerektirmeden at-least-once işleme ve crash recovery sağlıyor.
+- **Redis:** Kullanıcı başına atlama filtresi, partition lease (dağıtık tek-sahiplik) ve `areas.changed` pub/sub bildirimi — hiçbiri doğruluk için gerekli değil, hepsi kaybedilebilir.
+- **Flatbush, Turf ve H3:** Bellek içi geofence aday arama (R-tree) ve kesin geometri değerlendirmesi; H3 ayrıca sabit-kullanıcı atlama optimizasyonu için hücre-uniform'luk kontrolünde kullanılıyor.
+- **class-validator ve class-transformer:** DTO doğrulama ve dönüşümü — NestJS'in standart, dekoratör tabanlı yaklaşımı; kurallar controller kodundan ayrı, test edilebilir DTO sınıflarında tutuluyor.
+- **Joi:** Ortam değişkeni (env) şema doğrulaması — uygulama geçersiz/eksik bir `.env` ile veya mantıksal olarak tutarsız süre ayarlarıyla (örn. `FORCE_EVAL_MS >= STATE_REFRESH_MS`) **açılmamalı**; bu kontrol açılışta yapılıyor.
+- **@nestjs/throttler:** Per-IP ve per-user rate limiting — aşırı/kötü niyetli trafiği API katmanında, worker'a hiç ulaşmadan sınırlıyor.
+- **@nestjs/terminus:** `/health/live` ve `/health/ready` — Kubernetes'in henüz hazır olmayan bir pod'a trafik göndermesini engelliyor.
+- **prom-client (Prometheus):** Kuyruk lag'i, worker batch süresi, atlanan/değerlendirilen nokta oranı gibi amaca özel 10 metrik — ölçekleme kararı tahminle değil ölçümle verilmeli.
+- **nestjs-pino:** Yapılandırılmış (JSON) loglama, her isteğe bir request id — production'da log arama ve korelasyon için düz `console.log`'dan daha uygun.
+- **@nestjs/swagger:** `/docs`'ta canlı API dokümantasyonu; her parametre açıklaması ve hata örneği gerçek sunucu cevaplarıyla karşılaştırılarak doğrulandı.
+- **lru-cache:** `isUniformCell` sonuçlarının cache'lenmesi (Bölüm 9.1) — aynı H3 hücresi için poligon-kesişim hesabı tekrarlanmıyor; indeks yeniden kurulduğunda cache temizleniyor.
+- **murmurhash-js:** `userId → partition` hash'i — hızlı, deterministik, kriptografik olmayan bir hash; aynı kullanıcı her zaman aynı partition'a (ve dolayısıyla aynı worker'a) gider.
+- **Docker ve Docker Compose:** Tek komutla (`docker compose up`) tekrarlanabilir ortam — `postgres`, `redis`, `api`, `worker` servisleri ve bunlardan önce çalışıp bitmesi gereken tek-seferlik `migration-init` servisi.
+- **Jest, Supertest, testcontainers, fast-check ve k6:** Unit, entegrasyon, property-based, e2e ve yük testleri. Testcontainers ile Redis ve PostGIS **mock'lanmıyor** — gerçek servislere karşı çalışıyor.
 
-Kararların gerekçeleri [docs/adr/](docs/adr/) altında kayıtlıdır.
+Kararların gerekçeleri [docs/adr/](docs/adr/) altında da kayıtlıdır.
 
 ## Varsayımlar
 
