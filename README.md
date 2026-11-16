@@ -285,7 +285,31 @@ TARGET_POINTS_PER_SEC=2000 BATCH_SIZE=20 RAMP_SEC=10 HOLD_SEC=30 k6 run benchmar
 - **Antimeridyen desteği:** Alanlar 180./−180. meridyeni kesemez (SRID 4326, şehir/mahalle ölçeği varsayımı).
 - **Çok bölgeli (multi-region) kurulum:** Tek PostgreSQL/Redis kümesi varsayılır.
 
-WebSocket girişi ve harita demosu Faz 12 için opsiyoneldir.
+### Faz 12 (bonus, opsiyonel) — uygulanmadı, tasarım notu
+
+WebSocket girişi ve harita demosu bilinçli olarak **uygulanmadı** (plan.md'nin kendi önerisi: zaman kısıtlıysa bu maddeler "tasarım olarak" anlatılabilir). Nasıl yapılacağı:
+
+- **`LocationsGateway` (WebSocket):** `@WebSocketGateway()` ile yeni bir gateway; `@SubscribeMessage('locations')` handler'ı, `LocationsController`'ın bugün kullandığı **aynı** `IngestService.ingest(points)` ve `parseLocationRequest`'i çağırır — ingest mantığı zaten taşıyıcıdan (HTTP/WS) bağımsız tasarlandığı için yeni bir doğrulama/kuyruklama kodu yazmaya gerek kalmaz. Ack olarak `{accepted, rejected}` (bugünkü HTTP response'uyla aynı şekil) WS mesajı olarak geri döner. Idempotency zaten Redis/PG seviyesinde çözüldüğü için (bkz. Tutarlılık Garantileri) bu ek giriş kanalı yeni bir doğruluk riski getirmez.
+- **Harita demo sayfası (Leaflet):** Statik bir HTML sayfası; açılışta `GET /areas`'tan poligonları çizer, canlı girişler için ya `GET /logs`'u kısa aralıkla polling yapar ya da `LocationsGateway` üzerinden bir `area.entered` event'i yayınlanıp sayfa buna abone olur. Salt demo amaçlı, API'nin iş mantığına dokunmaz.
+
+## Güvenlik
+
+**Hâlihazırda var olanlar:**
+- Docker imajı root olmayan bir kullanıcıyla (`USER node`) çalışıyor.
+- Tüm girdi (konum, poligon) sıkı doğrulanıyor: koordinat aralıkları, poligon başına `MAX_POLYGON_VERTICES`, istek başına `MAX_BATCH_LOCATIONS` — büyük/bozuk payload'larla DoS riskini sınırlıyor.
+- Per-IP ve per-user rate limiting (`@nestjs/throttler`).
+- Tüm sorgular TypeORM'un parametreli sorgu API'si üzerinden gidiyor; hiçbir yerde kullanıcı girdisi ham SQL'e string olarak enjekte edilmiyor.
+- Sırlar (`DATABASE_URL`, `REDIS_URL`) `.env`'de tutulur, `.gitignore` ile repoya girmesi engellenir.
+
+**Production'a geçerken eklenecekler (bu case kapsamında bilinçli olarak yapılmadı):**
+- **Kimlik doğrulama/yetkilendirme:** `userId` şu an istek gövdesinden gelip güvenilir kabul ediliyor (bkz. Varsayımlar). Production'da JWT doğrulaması + `userId`'nin token'dan alınması, ve `POST /areas` gibi yazma endpoint'lerinin bir admin/rol kontrolünden geçmesi gerekir.
+- **Dağıtık rate limiting:** `@nestjs/throttler`'ın varsayılan storage'ı **process-içi bellekte** tutuluyor. API birden fazla instance ile koşarsa (ki mimari tam olarak bunun için tasarlandı), her instance kendi sayacını tutar — efektif limit `RATE_LIMIT_PER_MIN × instance sayısı` olur, tek bir global limit değil. Production'da Redis-backed bir throttler storage'a (`@nestjs/throttler`'ın Redis storage'ı veya benzeri) geçilmeli.
+- **Güvenlik header'ları:** `helmet` gibi bir middleware ile CSP, `X-Content-Type-Options`, `X-Frame-Options`, HSTS gibi header'lar eklenmedi.
+- **TLS:** `postgres://`/`redis://` bağlantıları şu an düz metin; production'da `sslmode=require` / `rediss://` ve servisler arası mTLS düşünülmeli. TLS terminasyonu zaten bir load balancer/ingress'te yapılacağı varsayılıyor, uygulama kodu bunu kendisi yapmıyor.
+- **Sır yönetimi:** Şu an `.env` dosyası; production'da bir secrets manager (Vault, AWS Secrets Manager, Kubernetes Secrets) kullanılmalı.
+- **Bağımlılık taraması:** CI'da (`.github/workflows/ci.yml`) `npm audit` veya Dependabot/Snyk gibi bir otomatik tarama yok.
+- **En az ayrıcalık (DB):** Migration'lar ve runtime aynı Postgres kullanıcısıyla (`app`) çalışıyor. Production'da migration'lar için ayrı, DDL yetkisi olan bir rol; runtime için sadece gerekli DML izinlerine sahip, DDL yetkisi olmayan ayrı bir rol kullanılmalı.
+- **PII / veri saklama politikası:** `userId` ve konum verisi kişisel veri sayılabilir. Production'da şifreleme-at-rest, saklama süresi politikası ve "unutulma hakkı" (kullanıcı verisinin silinmesi) talepleri için bir mekanizma gerekir — şu an `area_entries`'i `userId`'ye göre toplu silen bir endpoint/job yok.
 
 ## Ölçekleme Yolu
 
