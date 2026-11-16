@@ -1,0 +1,130 @@
+x-app-environment: &app-environment
+  NODE_ENV: ${NODE_ENV:-development}
+  API_PORT: ${API_PORT:-3000}
+  METRICS_PORT: ${METRICS_PORT:-9100}
+  DATABASE_URL: ${DATABASE_URL:-postgres://app:app@postgres:5432/locations}
+  DATABASE_READ_URL: ${DATABASE_READ_URL:-}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  STREAM_PARTITIONS: ${STREAM_PARTITIONS:-16}
+  STREAM_MAXLEN: ${STREAM_MAXLEN:-2000000}
+  BACKPRESSURE_MAX_PENDING: ${BACKPRESSURE_MAX_PENDING:-500000}
+  WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-500}
+  WORKER_BLOCK_MS: ${WORKER_BLOCK_MS:-1000}
+  PARTITION_LEASE_TTL_MS: ${PARTITION_LEASE_TTL_MS:-15000}
+  PARTITION_LEASE_RENEW_MS: ${PARTITION_LEASE_RENEW_MS:-5000}
+  MAX_DELIVERY_ATTEMPTS: ${MAX_DELIVERY_ATTEMPTS:-5}
+  GEOFENCE_INDEX: ${GEOFENCE_INDEX:-rtree}
+  H3_INDEX_RESOLUTION: ${H3_INDEX_RESOLUTION:-9}
+  H3_SKIP_RESOLUTION: ${H3_SKIP_RESOLUTION:-11}
+  AREA_INDEX_REFRESH_MS: ${AREA_INDEX_REFRESH_MS:-30000}
+  EXIT_CONFIRM_POINTS: ${EXIT_CONFIRM_POINTS:-3}
+  EXIT_CONFIRM_MS: ${EXIT_CONFIRM_MS:-30000}
+  FORCE_EVAL_MS: ${FORCE_EVAL_MS:-60000}
+  STATE_REFRESH_MS: ${STATE_REFRESH_MS:-300000}
+  SIGNAL_TIMEOUT_MS: ${SIGNAL_TIMEOUT_MS:-600000}
+  SWEEPER_INTERVAL_MS: ${SWEEPER_INTERVAL_MS:-60000}
+  USER_FILTER_TTL_S: ${USER_FILTER_TTL_S:-3600}
+  TS_MAX_FUTURE_MS: ${TS_MAX_FUTURE_MS:-60000}
+  TS_MAX_PAST_MS: ${TS_MAX_PAST_MS:-86400000}
+  MAX_BATCH_LOCATIONS: ${MAX_BATCH_LOCATIONS:-100}
+  MAX_POLYGON_VERTICES: ${MAX_POLYGON_VERTICES:-10000}
+  RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-120}
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: locations
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U app -d locations']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  migration-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    command: ['node', 'dist/database/migration-runner.js']
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    environment: *app-environment
+    ports:
+      - '${API_PORT:-3000}:${API_PORT:-3000}'
+    depends_on:
+      migration-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:' + process.env.API_PORT + '/health/live')
+          .then(response => process.exit(response.ok ? 0 : 1))
+          .catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    command: ['node', 'dist/main.worker.js']
+    environment: *app-environment
+    ports:
+      - '${METRICS_PORT:-9100}:${METRICS_PORT:-9100}'
+    depends_on:
+      migration-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:' + process.env.METRICS_PORT + '/health/live')
+          .then(response => process.exit(response.ok ? 0 : 1))
+          .catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres-data:
